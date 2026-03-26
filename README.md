@@ -12,5 +12,5 @@ There are two figures associated with this manuscript. Figure 1 focuses on the a
 
 ## Figure 2
 
-  - Data
+  - [Data](https://github.com/riddlenc/2026_Bynum_tree_shrews/blob/main/TS%20Breeding%20Book%201%20(1).csv)
   - Scripts

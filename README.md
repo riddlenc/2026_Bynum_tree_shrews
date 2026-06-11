@@ -7,7 +7,7 @@ There are two figures associated with this manuscript. Figure 1 focuses on the a
 ## Figure 1
 
   - [Data](https://github.com/riddlenc/2026_Bynum_tree_shrews/blob/main/TS_final_data.csv)
-  - [Scripts](https://github.com/riddlenc/2026_Bynum_tree_shrews/blob/main/TS%Longevity%Plots.Rmd)
+  - [Scripts](https://github.com/riddlenc/2026_Bynum_tree_shrews/blob/main/TS%20Longevity%20Plots.Rmd)
 
 
 ## Figure 2

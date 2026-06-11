@@ -1,0 +1,656 @@
+---
+title: "Reproductive Aging Plots"
+author: "Jalen Bynum"
+date: "2024-10-30"
+output: html_document
+---
+
+## Loading packages
+```{r}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(here)
+```
+
+# Cleaning the environment
+```{r}
+rm(list=ls()) # cleaning the environment first
+```
+
+# Loading data and reformatting
+Upload breeding data to the environment, format date and calculate time to parturition
+```{r}
+breeding<-read.csv("TS Breeding Book 1 (1).csv")
+
+# Making empty values to NA. NOTE: This makes everything into char variables.
+breeding <- breeding %>%
+  mutate(
+    across(everything(), \(x) na_if(x, ""))
+  )
+
+# Checking if the Pup # columns have anything other than NA or numbers
+bad_rows_born <- breeding[!(is.na(breeding$Pups.Birthed) | grepl("^-?\\d+$", breeding$Pups.Birthed)), ]
+# All of these are ? entries, and together these 171 entries only have 4 surviving pups. 
+
+
+# Checking if the Pup # columns have anything other than NA or numbers
+bad_rows_survived <- breeding[!(is.na(breeding$Pups.Survived) | grepl("^-?\\d+$", breeding$Pups.Survived)), ]
+# All but one of these are ? entries, and together these 6 entries account for 8 pups that were born.
+
+
+#Change number of pups birthed and survived to numeric. This changes non-numberic values to NA.
+breeding$Pups.Birthed<-as.numeric(breeding$Pups.Birthed) 
+breeding$Pups.Survived<-as.numeric(breeding$Pups.Survived) 
+
+# Turning dates into the correct format
+breeding$IN<-as.Date(breeding$IN,format = "%m/%d/%Y")
+breeding$Out<-as.Date(breeding$Out,format = "%m/%d/%Y")
+breeding$Birth<-as.Date(breeding$Birth,format = "%m/%d/%Y")
+
+
+# Defining new variables
+breeding$TimeToParturition<-difftime(breeding$Birth,breeding$IN,units="days")
+breeding$TimeToParturition <- as.numeric(breeding$TimeToParturition)
+
+breeding$PupSurvival<-breeding$Pups.Survived/breeding$Pups.Birthed #Calculate pup survival
+
+head(breeding)
+summary(breeding)
+```
+
+We have 177 question mark entries for the number of pups born or surviving. Together, these account for 4 surviving offspring. 
+
+
+## Data cleaning
+Pup numbers look reasonable, and survival goes from 0-1. 
+
+We have some instances of negative parturition, which need to be removed.
+
+The first 2 numbers of each animal ID are the birth year of the animal, so birthyear was derived from animal ID.
+```{r}
+# Remove entries with negative time to parturition and removing rows with NA
+rm(bad_rows)
+bad_rows <- subset(breeding,breeding$TimeToParturition<0)
+breeding <-subset(breeding,breeding$TimeToParturition>0)
+# Most of these bad rows look like typos, but since we can't say for sure they are removed.
+
+# Sanity check
+subset(breeding,breeding$TimeToParturition<0) # Good, nothing shows up
+
+summary(breeding)
+
+```
+Now, the date entries - in, out, births - all look reasonable, going from 1996 to 2014.  But there still is a problem with the time to parturition, as it ranges from 3 days to 3699 days. The reported gestation time is 40-52 days, so we should be at least 40 days. I need to have a look at these outliers. 
+
+```{r}
+rm(bad_rows)
+bad_rows <- subset(breeding, TimeToParturition < 30)
+
+breeding <- subset(breeding, TimeToParturition >3)
+
+rm(bad_rows)
+bad_rows <- subset(breeding, TimeToParturition > 200)
+
+breeding <- subset(breeding, TimeToParturition < 3000)
+
+# Sanity check
+summary(breeding)
+```
+There are 11 observations that are below 30 days gestation, which seems unlikely, but 8 of them are supported by the "out" dates as well . I will consider removing these entries. I will remove the entry with 3 days right now, as that is most definitely not correct. 
+There are 18 observations above 200 days to parturition. They all make sense given the in/out day, other than the 3699 value, which is clearly some kind of typo. I'm removing this entry. 
+
+## Reformatting some more things to get ages of the parents
+The first part of the animal ID is the year they were born.
+```{r}
+
+# Modify breeding$year.F for four-digit entries and breeding$year.M for three-digit entries
+breeding$year.F <- ifelse(nchar(breeding$F) == 4, substr(breeding$F, 1, 2), substr(breeding$F, 1, 1))
+breeding$year.M <- ifelse(nchar(breeding$M) == 4, substr(breeding$M, 1, 2), substr(breeding$M, 1, 1))
+
+# View the updated data frame
+head(breeding)
+summary(breeding)
+```
+Ensure that formatting of date is consistent between 1900s and 2000s entries.
+
+```{r}
+
+# Function to convert two-digit or one-digit character years to four-digit years or NA
+convert_to_four_digit_year <- function(x) {
+  # Check if the entry is numeric and either two-digit or one-digit
+  if (grepl("^\\d{1,2}$", x)) {  
+    year <- as.numeric(x)
+    if (year >= 15 && year <= 99) {
+      return(1900 + year)  # Convert two-digit entries to 1900s
+    } else if (year >= 1 && year <= 14) {
+      return(2000 + year)  # Convert one-digit entries to 2000s
+    }
+  }
+  
+  # Return NA for non-numeric entries or entries that don't match the format
+  return(NA)
+}
+
+# Example usage:
+# Assuming 'breeding$year.M' contains your data column
+breeding$year.M <- sapply(breeding$year.M, convert_to_four_digit_year)
+breeding$year.F<-sapply(breeding$year.F,convert_to_four_digit_year)
+# View the updated data frame
+head(breeding)
+summary(breeding)
+
+```
+Ok, the summary shows that we have problem with the birth years, and need to do some more data cleaning here. 
+
+```{r}
+rm(bad_rows)
+bad_rows <- subset(breeding, year.F < 1990)
+
+breeding <- subset(breeding, year.F > 1989)
+
+rm(bad_rows)
+bad_rows <- subset(breeding, year.M < 1990)
+
+breeding <- subset(breeding, year.M > 1987)
+
+# Sanity check
+summary(breeding)
+```
+
+There are 4 questionable entries for females, and I am going to remove them to be safe.
+For males, there are 35 questionable entries, most of them for males with 4 digit IDs that start with 72 or 73. But as these matings are in th 2000s, that's just not correct. I'm keeping one male from 1988, as that makes sense with the females birth data and the mating date, but otherwise, I will remove these, as there might have been something odd with the animal IDs. 
+
+
+Calculate age using birth year and time of mate pairing (IN).
+```{r}
+breeding$year.in<-year(breeding$IN) 
+breeding$f.age<-as.numeric(difftime(breeding$year.in,breeding$year.F)) #Calculate female age
+breeding$m.age<-as.numeric(difftime(breeding$year.in,breeding$year.M)) #Calculate male age
+
+# Sanity check
+summary(breeding)
+```
+Ok, more data cleaning is needed, as we have some negative ages at the time of mate pairings. 
+
+```{r}
+rm(bad_rows)
+bad_rows <- subset(breeding, f.age < 0)
+
+breeding <- subset(breeding, f.age >= 0)
+
+rm(bad_rows)
+bad_rows <- subset(breeding, m.age < 0)
+
+breeding <- subset(breeding, m.age >= 0)
+
+breeding <- subset(breeding, F > 100)
+breeding <- subset(breeding, M > 100)
+
+# Sanity check
+summary(breeding)
+```
+These bad entries are mostly due to the animal ID numbers below 100 from the early 2000s, that are not enirely clear. I will remove all the negative entries, and all entries with low animal IDs to be safe. 
+
+A few last checks
+```{r}
+# Remove rows with NA in TimeToParturition for the entire data frame
+breeding <- breeding[!is.na(breeding$TimeToParturition), ]
+
+# Define the quantiles to cut off 5% on upper end of time to parturition
+upper_bound <- quantile(breeding$TimeToParturition, 0.95)
+
+# Filter the data to remove outliers
+cleaned.data <- breeding[ breeding$TimeToParturition <= upper_bound, ]
+outliers<-breeding[breeding$TimeToParturition>upper_bound,]
+
+# Sanity check
+summary(cleaned.data)
+```
+If we are removing outliers, maybe we should do that at both ends of the distribution...
+
+Based on discussion with Raffi and the core staff, we need to make one more adjustment to the data frame. The animals with O pups birthed or "NA" for the number of pups birthed represent either failed matings (most often) or pups cannibalized at birth (less likely). Given that we can't distinguish between these two occurrances, these instances ned to be removed and analyzed separately. 
+```{r}
+zero.pups <- cleaned.data[
+  is.na(cleaned.data$Pups.Birthed) |
+  (!is.na(cleaned.data$Pups.Birthed) & cleaned.data$Pups.Birthed == 0),
+]
+# Can't just use Pb == 0, because NA values will create rows entirely of NA.
+
+summary(zero.pups)
+
+# Remove entries with pups surviving but no info on # of pups birthed
+rm(bad_rows)
+bad_rows <- subset(zero.pups, Pups.Survived > 0) # 2 entries found
+
+zero.pups <- subset(zero.pups, Pups.Survived == 0 | is.na(Pups.Survived)) # Removing them.
+
+summary(zero.pups)
+
+# And then making the final cleaned dataset without these entries
+cleaned.data <- subset(cleaned.data, Pups.Birthed >0)
+
+summary(cleaned.data)
+```
+There are two odd entries which have NA pups at birth, but have 1 surviving. I'll removed those from the analysis.
+
+# Comparing those two datasets
+```{r}
+cleaned.data$failed.pairing <- "no"
+zero.pups$failed.pairing <-"yes"
+
+test.data <- rbind(cleaned.data, zero.pups)
+
+kruskal.test(TimeToParturition ~ failed.pairing, data = test.data)
+kruskal.test(f.age ~ failed.pairing, data = test.data)
+kruskal.test(m.age ~ failed.pairing, data = test.data)
+```
+
+
+## Making some frequency tables and some basic analysis
+```{r}
+
+F.age.table<-table(cleaned.data$f.age)
+M.age.table<-table(cleaned.data$m.age)
+
+parturition.table<-table(cleaned.data$TimeToParturition) # not helpful; too many bins
+
+# Calculate group means
+vars_to_summarise <- c("Pups.Birthed", "Pups.Survived", "PupSurvival", "TimeToParturition")
+
+summary_table.f <- cleaned.data %>%
+  group_by(f.age) %>%
+  summarise(
+    across(
+      all_of(vars_to_summarise),
+      list(
+        mean = ~ mean(.x, na.rm = TRUE),
+        se = ~ sd(.x, na.rm = TRUE) / sqrt(sum(!is.na(.x))),
+        n = ~ sum(!is.na(.x))
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+
+summary_table.f
+
+summary_table.m <- cleaned.data %>%
+  group_by(m.age) %>%
+  summarise(
+    across(
+      all_of(vars_to_summarise),
+      list(
+        mean = ~ mean(.x, na.rm = TRUE),
+        se = ~ sd(.x, na.rm = TRUE) / sqrt(sum(!is.na(.x))),
+        n = ~ sum(!is.na(.x))
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+
+summary_table.m
+
+# Non-parametric tests for the effect of age
+kruskal.test(Pups.Birthed ~ f.age, data = cleaned.data) # Sign
+kruskal.test(Pups.Birthed ~ m.age, data = cleaned.data) # Sign
+
+kruskal.test(Pups.Survived ~ f.age, data = cleaned.data) # Sign
+kruskal.test(Pups.Survived ~ m.age, data = cleaned.data) # ns
+
+kruskal.test(PupSurvival ~ f.age, data = cleaned.data) # Sign
+kruskal.test(PupSurvival ~ m.age, data = cleaned.data) # ns
+
+kruskal.test(TimeToParturition ~ f.age, data = cleaned.data) # Sign
+kruskal.test(TimeToParturition ~ m.age, data = cleaned.data) # Sign
+
+# Following up with Dunn's tests
+library(dunn.test)
+attach(cleaned.data)
+dunn.test(Pups.Birthed, f.age, kw=FALSE, method="bonferroni")
+dunn.test(Pups.Birthed, m.age, kw=FALSE, method="bonferroni")
+
+dunn.test(Pups.Survived, f.age, kw=FALSE, method="bonferroni")
+dunn.test(Pups.Survived, m.age, kw=FALSE, method="bonferroni")
+
+dunn.test(PupSurvival, f.age, kw=FALSE, method="bonferroni")
+dunn.test(PupSurvival, m.age, kw=FALSE, method="bonferroni")
+
+dunn.test(TimeToParturition, f.age, kw=FALSE, method="bonferroni")
+dunn.test(TimeToParturition, m.age, kw=FALSE, method="bonferroni")
+detach(cleaned.data)
+```
+
+
+
+```{r}
+# Keeping for later, just in case
+#data$f.age<-na.omit(data$f.age)
+#data$m.age<-na.omit(data$m.age)
+#data$Pups.Survived<-na.omit(data$Pups.Survived)
+
+```
+
+
+## Testing some basic linear models
+```{r}
+data_long <- cleaned.data %>%
+  pivot_longer(cols = c(f.age, m.age), 
+               names_to = "Age_Type", 
+               values_to = "Age")
+
+# Ensure Age_Type is a factor
+data_long$Age_Type <- as.factor(data_long$Age_Type)
+
+# Correlation between male and female age in mate pair
+cor.test(cleaned.data$f.age, cleaned.data$m.age)
+
+# Create linear model - basic linear model for time
+model_f_age <- lm(TimeToParturition ~ f.age, data = cleaned.data)
+summary(model_f_age)
+model_m_age <- lm(TimeToParturition ~ m.age, data = cleaned.data)
+summary(model_m_age)
+model_fm_age <- lm(TimeToParturition ~ f.age * m.age, data = cleaned.data)
+summary(model_fm_age)
+
+# here, the dependent variable is not continuous, so need to use logistic regression
+rm(model_f_age, model_m_age, model_fm_age)
+model_f_age <- glm(Pups.Birthed ~ f.age, family = poisson(link = "log"), data = cleaned.data) 
+summary(model_f_age)
+model_m_age <- glm(Pups.Birthed ~ m.age, family = poisson(link = "log"), data = cleaned.data)
+summary(model_m_age)
+model_fm_age <- glm(Pups.Birthed ~ f.age * m.age, family = poisson(link = "log"), data = cleaned.data)
+summary(model_fm_age)
+
+rm(model_f_age, model_m_age, model_fm_age)
+model_f_age <- glm(Pups.Survived ~ f.age, family = poisson(link = "log"), data = cleaned.data)
+summary(model_f_age)
+model_m_age <- glm(Pups.Survived ~ m.age, family = poisson(link = "log"), data = cleaned.data)
+summary(model_m_age)
+model_fm_age <- glm(Pups.Survived ~ f.age * m.age, family = poisson(link = "log"), data = cleaned.data)
+summary(model_fm_age)
+
+# This is continous data from 0 to 1, and needs a beta regression
+rm(model_f_age, model_m_age, model_fm_age)
+library (betareg)
+# Scaling PupSurvival so that it doesn't includes 0 and 1's as those would cause errors.
+n <- nrow(cleaned.data)
+cleaned.data$PupSurvival2 <- (cleaned.data$PupSurvival * (n - 1) + 0.5) / n
+
+model_fm_age <- betareg(PupSurvival2 ~ f.age * m.age, data = cleaned.data)
+summary(model_fm_age)
+
+
+```
+
+
+```{r}
+# Create the plot with boxplots, points, and goodness-of-fit lines
+PupSurvivalPlot<-ggplot(data_long, aes(x = as.factor(Age), y = Pups.Survived)) +
+  geom_boxplot(aes(fill = Age_Type), position = position_dodge(0.75), alpha = 0.6) + 
+  geom_point(aes(color = Age_Type), position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75), alpha = 0.6) +
+  labs(title = "Boxplots of Time to Parturition with respect to Parental Age",
+       x = "Time",
+       y = "Pups Survived",
+       fill = "Age Type",
+       color = "Age Type") +
+  theme_minimal() +
+  scale_fill_manual(values = c("f.age" = "red", "m.age" = "blue")) +
+  scale_color_manual(values = c("f.age" = "red", "m.age" = "blue")) +
+  scale_y_continuous(limits = c(0, 4))
+
+PupSurvivalPlot
+#Model the relationship between parental age and number of pups survived
+pup.survival.model <- lm(Pups.Survived ~ m.age * f.age, data = cleaned.data)
+summary(pup.survival.model)
+```
+## Plot the time to parturition by parental age.
+```{r}
+
+data_long <- cleaned.data %>%
+  pivot_longer(cols = c(f.age, m.age), 
+               names_to = "Age_Type", 
+               values_to = "Age")
+# Female and Male ages were considered age values
+# Ensure Age_Type is a factor
+data_long$Age_Type <- as.factor(data_long$Age_Type)
+
+
+# Create the plot with boxplots, points, and goodness-of-fit lines
+ParturitionPlot<-ggplot(data_long, aes(x = as.factor(Age), y = TimeToParturition)) +
+  geom_boxplot(aes(fill = Age_Type), position = position_dodge(0.75), alpha = 0.6) + 
+  geom_point(aes(color = Age_Type), position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75), alpha = 0.6) +
+  labs(title = "Boxplots of Conception Time across Ages",
+       x = "Time",
+       y = "Time to Parturition (days)",
+       fill = "Age Type",
+       color = "Age Type") +
+  theme_minimal() +
+  scale_fill_manual(values = c("f.age" = "red", "m.age" = "blue")) +
+  scale_color_manual(values = c("f.age" = "red", "m.age" = "blue"))
+ParturitionPlot
+
+# Saving a file
+pdf(file = "TimeToBirth.pdf", width = 8, height = 5)
+
+ParturitionPlot
+
+dev.off()
+```
+
+## Plot the number of Pups by parental age
+
+```{r}
+# Create the plot with boxplots & points
+PupsBornPlot<-ggplot(data_long, aes(x = as.factor(Age), y = Pups.Birthed)) +
+  geom_boxplot(aes(fill = Age_Type), position = position_dodge(0.75), alpha = 0.6) + 
+  geom_point(aes(color = Age_Type), position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75), alpha = 0.6) +
+  labs(title = "Boxplots of pups birthed across Ages",
+       x = "Time",
+       y = "Number of Pups birthed",
+       fill = "Age Type",
+       color = "Age Type") +
+  theme_minimal() +
+  scale_fill_manual(values = c("f.age" = "red", "m.age" = "blue")) +
+  scale_color_manual(values = c("f.age" = "red", "m.age" = "blue"))
+PupsBornPlot
+
+violin_birthed <- ggplot(data_long, aes(fill=Age_Type, y=Pups.Birthed, x=as.factor(Age))) + 
+    geom_violin(position="dodge", alpha=0.5, outlier.colour="transparent") +
+    labs(title = "Boxplots of pups birthed across Ages",
+       x = "Time",
+       y = "Number of Pups birthed",
+       fill = "Age Type",
+       color = "Age Type") +
+  theme_minimal() +
+  scale_fill_manual(values = c("f.age" = "red", "m.age" = "blue")) +
+  scale_color_manual(values = c("f.age" = "red", "m.age" = "blue"))
+
+violin_birthed
+
+# Saving the plot
+pdf(file = "PupsBirthed.pdf", width = 8, height = 5)
+violin_birthed
+dev.off()
+
+violin_survived <- ggplot(data_long, aes(fill=Age_Type, y=Pups.Survived, x=as.factor(Age))) + 
+    geom_violin(position="dodge", alpha=0.5, outlier.colour="transparent") +
+    labs(title = "Boxplots of pups birthed across Ages",
+       x = "Time",
+       y = "Number of Pups survived",
+       fill = "Age Type",
+       color = "Age Type") +
+  theme_minimal() +
+  scale_fill_manual(values = c("f.age" = "red", "m.age" = "blue")) +
+  scale_color_manual(values = c("f.age" = "red", "m.age" = "blue"))
+
+violin_survived
+
+# Saving the plot
+pdf(file = "PupsSurvived.pdf", width = 8, height = 5)
+violin_survived
+dev.off()
+
+```
+Looks bad - can we do violin plot instead...
+
+
+05/11/2026 - some additional plots requested by co-authors
+
+## Plot looking at birth months
+In some tree shrews, there have been reports of seaonality in terms of when they give births. We want to see if there is evidence of that in the UAB colony. 
+
+```{r}
+# Getting birth months
+cleaned.data$birth_month <- month(cleaned.data$Birth)
+cleaned.data$birth_month <- as.factor(cleaned.data$birth_month)
+
+# Simple histogram
+ggplot(cleaned.data, aes(x=birth_month)) +geom_bar()
+
+# Saving the plot
+pdf(file = "Birth_month_distribution.pdf", width = 8, height = 5)
+
+ggplot(cleaned.data, aes(x=birth_month)) +geom_bar()
+
+dev.off()
+```
+
+## Age of first reproduction
+My co-authors also wanted to know if we can get information about the age of first reproduction for the animals. 
+
+```{r}
+# Grabbing the earliest entry for each female ID, the plotting the counts.
+pdf(file = "Female_age_of_first_reprod.pdf", width = 8, height = 5)
+
+cleaned.data %>% 
+  group_by(F) %>%
+  arrange(Birth) %>% 
+  slice(1L) %>%
+  ggplot(aes(x=as.factor(f.age)))+geom_bar()
+
+dev.off()
+
+# Grabbing the earliest entry for each male ID, the plotting the counts.
+pdf(file = "Male_age_of_first_reprod.pdf", width = 8, height = 5)
+
+cleaned.data %>% 
+  group_by(M) %>%
+  arrange(Birth) %>% 
+  slice(1L) %>%
+  ggplot(aes(x=as.factor(m.age)))+geom_bar()
+
+dev.off()
+```
+
+## Plotting interaction effects
+Another request after the co-authors had a look at the manuscript was to see if we could find a way to plot the interaction effects from the linear models. So, we'll try that here. 
+Based on: https://cran.r-project.org/web/packages/sjPlot/vignettes/plot_marginal_effects.html
+and https://cran.r-project.org/web/packages/sjPlot/vignettes/plot_interactions.html
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+
+# blank theme
+sjPlot::set_theme(
+  base = theme_blank(),
+  axis.title.size = .9,
+  axis.textsize = .9,
+  legend.size = .7,
+  legend.title.size = .8,
+  geom.label.size = 3
+)
+
+
+#Model
+model_fm_age <- glm(Pups.Survived ~ f.age * m.age, family = poisson(link = "log"), data = cleaned.data)
+summary(model_fm_age)
+
+plot_model(model_fm_age, type = "pred", terms = "f.age")
+
+# We only have one male 8 years or older, so we removed that.
+plot_model(model_fm_age, type = "pred", terms = c("f.age", "m.age[0:7]"), colors = c('#ffffd9','#edf8b1','#c7e9b4','#7fcdbb','#41b6c4','#1d91c0','#225ea8','#0c2c84'))
+
+
+# Plot the other way around
+plot_model(model_fm_age, type = "pred", terms = c("m.age", "f.age[0:7]"), colors = c('#ffffcc','#ffeda0','#fed976','#feb24c','#fd8d3c','#fc4e2a','#e31a1c','#b10026'))
+
+# Saving this plot to share with co-authors
+pdf(file = "Pups.surviving.marginal.pdf", width = 8, height = 5)
+
+plot_model(model_fm_age, type = "pred", terms = c("f.age", "m.age[0:7]"), colors = c('#ffffd9','#edf8b1','#c7e9b4','#7fcdbb','#41b6c4','#1d91c0','#225ea8','#0c2c84'))
+
+dev.off()
+
+
+```
+
+Ok, so I like this plot showing the marginal effects for females and males. 
+
+Now, I'll explicitly look at the interactions:
+```{r}
+plot_model(model_fm_age, type = "int", mdrt.values = "meansd")
+plot_model(model_fm_age, type = "int")
+
+# Saving this plot to share with co-authors
+pdf(file = "Pups.surviving.interaction.pdf", width = 8, height = 5)
+
+plot_model(model_fm_age, type = "int", mdrt.values = "meansd")
+
+dev.off()
+```
+
+## Bubble chart
+The final ask from the collaborators was to try a bubble chart instead of the  violin plots to show the reproductive output. We'll try that here. 
+
+To make this work, I will need to reformat the data. I will need a table that has 
+Sex, age, pup number, count of how often that pup number was observed
+
+```{r}
+# Prepping the data
+bubble_data <- data_long %>% filter(!is.na(Pups.Birthed)) %>%count(Age_Type, Age, Pups.Birthed)
+bubble_data
+
+# Basic bubble plot
+ggplot(bubble_data, aes(x=as.factor(Age), y=Pups.Birthed, size = n, color = Age_Type)) +
+    geom_point(alpha=0.7, position = position_dodge(width = 0.5)) +
+    scale_size_area(max_size = 15) +
+    scale_color_manual(values = c("red", "blue"))
+
+# Saving this plot to share with co-authors
+pdf(file = "Bubble_chart_birthed.pdf", width = 8, height = 5)
+
+ggplot(bubble_data, aes(x=as.factor(Age), y=Pups.Birthed, size = n, color = Age_Type)) +
+    geom_point(alpha=0.7, position = position_dodge(width = 0.5)) +
+    scale_size_area(max_size = 15) +
+    scale_color_manual(values = c("red", "blue"))
+
+dev.off()
+
+```
+
+And now for the # of pups surviving
+
+```{r}
+# Prepping the data
+bubble_data2 <- data_long %>% filter(!is.na(Pups.Survived)) %>%count(Age_Type, Age, Pups.Survived)
+bubble_data2
+
+# Basic bubble plot
+ggplot(bubble_data2, aes(x=as.factor(Age), y=Pups.Survived, size = n, color = Age_Type)) +
+    geom_point(alpha=0.7, position = position_dodge(width = 0.5)) +
+    scale_size_area(max_size = 15) +
+    scale_color_manual(values = c("red", "blue"))
+
+# Saving this plot to share with co-authors
+pdf(file = "Bubble_chart_survived.pdf", width = 8, height = 5)
+
+ggplot(bubble_data2, aes(x=as.factor(Age), y=Pups.Survived, size = n, color = Age_Type)) +
+    geom_point(alpha=0.7, position = position_dodge(width = 0.5)) +
+    scale_size_area(max_size = 15) +
+    scale_color_manual(values = c("red", "blue"))
+
+dev.off()
+
+```

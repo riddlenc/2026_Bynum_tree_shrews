@@ -1,0 +1,1659 @@
+---
+title: "TS_manuscript_Longevity"
+author: "Jalen Bynum"
+date: "2024-10-31"
+output: html_document
+---
+
+# Before getting started
+Install Packages necessary to complete the analysis:
+ggfortify
+tidyverse
+survival
+survminer
+readxl
+lubridate
+hrbrthemes
+ggridges
+devtools
+BaSTA2.0
+writexl
+here
+
+
+# Loading required packages
+```{r}
+library(ggfortify)
+library(tidyverse)
+library(survival)
+library(survminer)
+library(readxl)
+library(lubridate)
+library(hrbrthemes)
+library(ggridges)
+library(devtools)
+# library(BaSTA2.0) # version not available for this version of R fix later
+library(writexl)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(ggplot2)
+library(flexsurv)
+library(here)
+```
+
+# Load data set.
+
+```{r}
+rm(list=ls()) # cleaning the environment first
+dat<-read.csv("TS_final_data.csv")
+
+```
+
+# Reformatting and cleaning the data
+Matrices were created to format entries of sex and define NA values.
+```{r}
+cut <- c("N/A", "?", " ","")
+male<- c("M ","m"," M")
+female<-"f"
+```
+
+Entries in the Sex column were reformatted to either "male" or "female". Incomplete or unclear entries in the Sex and DOB columns were marked as NA.
+```{r}
+dat[dat[,3] %in% cut, 3] <-NA # fixing NAs in DOB
+
+dat[dat[,2] %in% male,2] <-"M"  # change "male" to "M"
+dat[dat[,8]=="N ",8]<- "N" # making " N" and "N" consistent
+dat[dat[,2] %in% female,2]<-"F"  # change "female to "F"
+dat[dat[,2] %in% cut, 2] <-NA # fixing NAs in sex
+dat[dat[,7] %in% cut, 7] <-NA # fixing NAs in death date
+
+dat$Sex <- as.factor(dat$Sex) # making sex a factor
+
+summary(dat)  #checking how things look
+```
+
+# Checking duplicate entries.
+
+```{r}
+# Check for duplicate entries
+flagged <- dat[duplicated(dat$Animal_ID), ]
+summary(flagged)
+```
+
+No duplicates left. 
+
+Incomplete cases of DOB or Animal ID were removed from the data set.
+```{r}
+step.2<-dat[complete.cases(dat$DOB),]
+step.3<-step.2[complete.cases(step.2$Animal_ID),]
+summary(step.3)
+```
+
+Date is formatted and undefined sex entries are removed
+```{r}
+step.3$DOB<-as.Date(step.3$DOB, "%m/%d/%y") # if not in the right format, returns NA
+step.3 <-step.3[complete.cases(step.3$DOB),] # keep only the entries that have a DOB
+
+step.3$Death_date<-as.Date(step.3$Death_date, "%m/%d/%y") # if not in the righ formati, retunrs NA
+
+# Removing entries without sex information
+step.3a<-step.3[complete.cases(step.3$Sex),] # keep only entries with sex specified
+# Sanity check to make sure we have two levels for sex.
+unique(step.3a$Sex)
+
+# Checking the sex ration, with #'s of F and M from summary
+chisq.test(x=c(687, 566), p=c(0.5, 0.5))
+# Sex ratio is biased towards females.
+summary(step.3a)
+```
+Calculate lifespan, remove negative and 0 day lifespans. 
+For living animals, we will assign a "death date" of 2023-08-01. These animals, as well as the animals that were euthanized, will be coded as "right censored" as we don't know their natural death date. 
+Note: We had one additional death added later to the dataset (2024-10-20).
+```{r}
+liv.censor.date<-as.Date("2023-08-01")
+liv.censor.date<-as.Date(liv.censor.date)
+step.3a[step.3a[,8]=="L",7]<- liv.censor.date
+liv<-subset(step.3a,SAC=="L")
+liv
+step.3a$lifespan<-difftime(step.3a$Death_date, step.3a$DOB, units = "days")
+# Sanity check
+#hist(as.numeric(step.3a$lifespan, units = "days"))
+# shows we have some negative numbers
+
+ negatives<-subset(step.3a, (lifespan < 0)) # look at entries with neg numbers
+# Those entries were checked and the issue can't be resolved.
+
+# Remove enties with negative lifespan
+step.4 <- subset(step.3a, lifespan >= 0 | is.na(lifespan))
+
+# Remove entries that don't have lifespans
+step.4 <-filter(step.4,!is.na(lifespan))
+
+# Remove entries without cause of death
+step.4<-subset(step.4,!SAC=="") # Remove all animals with unknown deaths
+
+summary(step.4)
+
+# Checking the sex ration, with #'s of F and M from summary
+chisq.test(x=c(533, 436), p=c(0.5, 0.5))
+# Sex ratio is biased towards females. 
+
+```
+
+
+Make a table to see the number of animals in these groups.
+```{r}
+step.4[step.4[,8] == "L",8] <-"Living"
+step.4[step.4[,8] == "Y",8] <-"Euthanized"
+step.4[step.4[,8] == "N",8] <-"Natural Death"
+step.4[step.4[,8] == "A",8] <-"Right censored" #Animals without a death date, but a last seen alive date
+table(step.4$Sex,step.4$SAC)
+
+```
+
+## Checking the sex ration in these groups
+```{r}
+chisq.test(c(F = 310, M = 263)) # Sign.
+chisq.test(c(F = 89, M = 75))
+chisq.test(c(F = 109, M = 75)) # Sign.
+chisq.test(c(F = 25, M = 23))
+```
+We have more females than males overall and among the euthanized and natural death animals. 
+
+##################################################################################################
+## Data exploration
+##################################################################################################
+
+Currently, lifespan is encoded as a "difftime" object, not as an actual number. To be able to do the various analysis, we need to change that to numeric. It will be in days.
+
+```{r}
+step.4$lifespan <- as.numeric(step.4$lifespan)
+```
+
+
+Recoding things for the lifespan analysis 
+```{r}
+
+data.fit<-step.4%>%mutate(SAC=ifelse(!SAC=="Natural Death",0,1))%>%mutate_if(is.character,as_factor) #Recodes cause of deaths as 0/1 for censoring
+
+```
+
+
+# Distribution of births
+Ridge Plot of DOB distribution according to Sex
+Females in Red
+Males in Blue
+```{r}
+dis.DOB.sex<-data.fit%>%ggplot( aes(x=DOB,y=Sex,fill=Sex)) +geom_density_ridges() +   theme_ridges() +   theme(legend.position = "none") +scale_fill_manual(values=c("#D81B60", "#1E88E5","#FFC107","#004D40")) +theme_ipsum() +labs(fill="Sex")+ggtitle("Birthdate Distribution by Sex")
+print(dis.DOB.sex)
+```
+
+Are there any differences in DOB between the sexes? 
+```{r}
+kruskal.test(as.numeric(data.fit$DOB) ~ data.fit$Sex)
+```
+
+# Distribution of death deates
+Ridge plot of death date distribution according to sex
+
+```{r}
+dis.Death.sex<-subset(step.4, (SAC != "Living" & SAC != "Right censored")) %>%ggplot( aes(x=Death_date,y=Sex,fill=Sex)) +ggtitle("Bin size = 3") +geom_density_ridges() +   theme_ridges() +   theme(legend.position = "none") +scale_fill_manual(values=c("#D81B60", "#1E88E5","#004D40")) +theme_ipsum() +labs(fill="Sex")+ggtitle("Death Date Distribution by Sex")
+print(dis.Death.sex)
+```
+
+
+Are there sex differences in the death dates?
+```{r}
+x <- step.4 %>% subset((SAC != "Living" & SAC != "Right censored"))
+kruskal.test(as.numeric(x$Death_date) ~ x$Sex)
+kruskal.test(Death_date ~ Sex, data = subset(step.4, (SAC != "Living" & SAC != "Right censored"))) # Same result
+rm(x)
+```
+
+
+Reformat cause of death for readability.
+Make excel file of death contingency table
+
+```{r}
+
+mort.table<-table(data.fit$lifespan,data.fit$Sex)
+if (!is.data.frame(mort.table)) {
+  mort.table <- as.data.frame(mort.table)
+}
+mort_by_sex<-write_xlsx(mort.table,path="mort_by_sex.xlsx")
+```
+
+Make subsections to view cause of death
+```{r}
+euth<-subset(step.4,step.4$SAC=="Euthanized")
+nd<-subset(step.4,step.4$SAC=="Natural Death")
+rc<-subset(step.4,step.4$SAC=="Right censored")
+living<-subset(step.4,step.4$SAC=="Living")
+```
+
+Ridge Plot of lifespan distribution according to Sex
+Females in Red
+Males in Blue
+```{r}
+dis.Sex<-data.fit %>% subset((SAC != "Living" & SAC != "Right censored")) %>%ggplot( aes(x=lifespan/365.25,y=Sex,fill=Sex)) +geom_density_ridges() +
+  theme_ridges() +
+  theme(legend.position = "none") +scale_fill_manual(values=c("#D81B60", "#1E88E5","#FFC107","#004D40")) +theme_ipsum() +labs(fill="Sex", x = "Lifespan (years)")+ggtitle("Lifespan Distribution by Sex ")
+print(dis.Sex)
+```
+Testing for overall lifespan differences by sex irrespective of cause of death
+```{r}
+kruskal.test(lifespan ~ Sex,data=subset(step.4, (SAC != "Living" & SAC != "Right censored")))
+
+step.4 %>% subset(SAC != "Living" & SAC != "Right censored") %>%
+  group_by(Sex) %>%
+  summarize(mean = mean(lifespan), median = median(lifespan)) 
+
+# and with just natural death animals
+kruskal.test(lifespan ~ Sex,data=subset(data.fit, (SAC == 1)))
+
+data.fit %>% subset(SAC ==1) %>%
+  group_by(Sex) %>%
+  summarize(mean = mean(lifespan), median = median(lifespan)) 
+```
+## Ridge Plot of Lifespan distribution according to cause of death
+Euthanized animals in green
+natural death animals in blue
+unknown animals in orange
+
+```{r}
+dis.Sac<-step.4%>%filter(!SAC %in% c("Living", "Right censored"))%>%ggplot( aes(x=lifespan/365.25,y=SAC,fill=SAC)) +geom_density_ridges() +
+  theme_ridges() +
+  theme(legend.position = "none") +scale_fill_manual(values=c("#69b3a2", "#404080","#CA6024","#F05151","#258EF8","#F825C5")) +theme_ipsum() +labs(fill="Cause Of Death", x = "Lifespan (years)")+ggtitle("Lifespan Distribution by Sac ")
+print(dis.Sac)
+
+
+```
+Testing for lifespan differences between euthanized and natural death animals
+```{r}
+x <- step.4%>%filter(!SAC %in% c("Living", "Right censored"))
+kruskal.test(x$lifespan ~ x$Sex) #checking for sex differences
+kruskal.test(x$lifespan ~ x$SAC) #checking for differences by death type
+rm(x)
+
+# Getting some averages
+x <- step.4 %>% subset (SAC == "Natural Death")
+mean(x$lifespan, na.rm = TRUE)
+rm(x)
+
+x <- step.4 %>% subset (SAC == "Euthanized")
+mean(x$lifespan, na.rm = TRUE)
+rm(x)
+
+x <- step.4 %>% filter(!SAC %in% c("Living", "Right censored")) %>% subset (Sex == "F")
+mean(x$lifespan, na.rm = TRUE)
+rm(x)
+
+x <- step.4 %>% filter(!SAC %in% c("Living", "Right censored")) %>% subset (Sex == "M")
+mean(x$lifespan, na.rm = TRUE)
+rm(x)
+
+step.4 %>% filter(SAC == "Natural Death") %>%
+  filter (Sex == "F") %>%
+  summarise(mean_lifespan = mean(lifespan, na.rm = TRUE), 
+            median_lifespan = median(lifespan, na.rm = TRUE)) 
+
+step.4 %>% filter(SAC == "Natural Death") %>%
+  filter (Sex == "M") %>%
+  summarise(mean_lifespan = mean(lifespan, na.rm = TRUE), 
+            median_lifespan = median(lifespan, na.rm = TRUE)) 
+      
+step.4 %>% filter(SAC == "Living") %>%
+  filter (Sex == "F") %>%
+  summarise(mean_lifespan = mean(lifespan, na.rm = TRUE), 
+            median_lifespan = median(lifespan, na.rm = TRUE)) 
+            
+step.4 %>% filter(SAC == "Living") %>%
+  filter (Sex == "M") %>%
+  summarise(mean_lifespan = mean(lifespan, na.rm = TRUE), 
+            median_lifespan = median(lifespan, na.rm = TRUE)) 
+
+step.4 %>% filter(SAC == "Euthanized") %>%
+  filter (Sex == "F") %>%
+  summarise(mean_lifespan = mean(lifespan, na.rm = TRUE), 
+            median_lifespan = median(lifespan, na.rm = TRUE)) 
+            
+step.4 %>% filter(SAC == "Euthanized") %>%
+  filter (Sex == "M") %>%
+  summarise(mean_lifespan = mean(lifespan, na.rm = TRUE), 
+            median_lifespan = median(lifespan, na.rm = TRUE)) 
+```
+
+
+## Ridge plot of lifespan distribution according to sex for natural death animals
+
+```{r}
+dis.nd<-nd%>%ggplot( aes(x=lifespan/365.25, y=Sex,fill=Sex, jittered_points = TRUE)) +geom_density_ridges() +
+  theme_ridges() +
+  theme(legend.position = "none") +scale_fill_manual(values=c("#D81B60", "#1E88E5","#FFC107","#004D40")) +theme_ipsum() +labs(fill="Sex", x = "Lifespan (years)")+ggtitle("Lifespan Distribution by Sex of Natural Death Animals")
+print(dis.nd)
+```
+
+Testing for sex differences in natural death animals
+```{r}
+kruskal.test(nd$lifespan ~ nd$Sex) #checking for sex differences
+```
+
+
+## Ridge plot of death date distribution according to cause of death
+
+```{r}
+death.fit<-step.4 %>% filter(!SAC %in% c("Living", "Right censored"))
+summary(death.fit)
+dis.Death.sac<-death.fit%>%ggplot( aes(x=Death_date,y=SAC,fill=SAC)) +ggtitle("Bin size = 3") +geom_density_ridges() +   theme_ridges() +   theme(legend.position = "none") +scale_fill_manual(values=c("#69b3a2", "#404080","#CA6024","#F05151","#258EF8","#F825C5")) +theme_ipsum() +ggtitle("Death Date Distribution by Sac")
+print(dis.Death.sac)
+```
+
+Checking for differences by sex and death type
+```{r}
+x <- death.fit
+kruskal.test(as.numeric(x$Death_date) ~ x$Sex) #checking for sex differences
+kruskal.test(as.numeric(x$Death_date) ~ x$SAC) #checking for differences by death type
+rm(x)
+```
+## Ridge plot of date of birth distribution according to cause of death
+
+```{r}
+dis.DOB.sac<-step.4%>%ggplot( aes(x=DOB,y=SAC,fill=SAC)) +geom_density_ridges() +   theme_ridges() +   theme(legend.position = "none") +scale_fill_manual(values=c("#69b3a2", "#404080","#CA6024","#F05151","#258EF8","#F825C5")) +theme_ipsum() +labs(fill="SAC")+ggtitle("Birthdate Distribution by Sac")
+print(dis.DOB.sac)
+```
+
+
+Create male and female subsections for main data set and for dead animals dataset.
+```{r}
+# step.4 includes all the cleaned data, even individuals with unknown cause of death.
+m.cage<-subset(step.4,Sex== "M",)
+f.cage<-subset(step.4,Sex=="F",)
+```
+
+```{r}
+# death.fit includes all dead animals, and excludes data from animals that are alive
+m.death<-subset(death.fit,Sex=="M")
+f.death<-subset(death.fit,Sex=="F")
+```
+
+
+## Lifespan distribution of females according to cause of death
+```{r}
+dis.lifespan.F<-step.4%>%filter(Sex=="F")%>%filter(lifespan>0)%>%ggplot( aes(x=lifespan/365.25,y=SAC,fill=SAC)) +geom_density_ridges() +
+  theme_ridges() +
+  theme(legend.position = "none") +scale_fill_manual(values=c("#69b3a2","#CA6024","#F05151","#258EF8","#F825C5")) +theme_ipsum() +ggtitle("Bin size = 3")+labs(fill="Sac", x = "Lifespan (years)")+ggtitle("Lifespan Distribution of Females by Sac")
+print(dis.lifespan.F)
+
+kruskal.test(lifespan ~ SAC, data = f.cage)
+```
+
+## Ridge plot of DOB distribution for females according to cause of death
+```{r}
+dis.DOB.F.L<-f.cage%>%ggplot( aes(x=DOB,y=SAC,fill=SAC)) +geom_density_ridges() +   theme_ridges() +   theme(legend.position = "none") +scale_fill_manual(values=c("#69b3a2", "#404080","#CA6024","#F05151","#258EF8","#F825C5")) +theme_ipsum() +labs(fill="Sex")+ggtitle("Birthdate Distribution of Females by Sac")
+print(dis.DOB.F.L)
+
+kruskal.test(as.numeric(f.cage$DOB) ~ f.cage$SAC)
+```
+
+  
+## Ridge plot of death date distribution for females according to cause of death
+```{r}
+dis.Death.F<-f.death%>%filter(lifespan>0)%>%ggplot( aes(x=Death_date,y=SAC,fill=SAC)) +geom_density_ridges() +   theme_ridges() +   theme(legend.position = "none") +scale_fill_manual(values=c("#69b3a2","#CA6024","#F05151","#258EF8","#F825C5")) +theme_ipsum() +ggtitle("Death Date Distribution of Females by Sac")
+print(dis.Death.F)
+
+kruskal.test(as.numeric(f.death$Death_date) ~ f.death$SAC)
+```
+
+
+## Rigde plot of Lifespan distribution for males according to cause of death
+
+```{r}
+dis.lifespan.M.L<-m.cage%>%ggplot( aes(x=lifespan/365.25,y=SAC,fill=SAC)) +geom_density_ridges() +   theme_ridges() +   theme(legend.position = "none") +scale_fill_manual(values=c("#69b3a2", "#CA6024","#F05151","#258EF8","#F825C5")) +theme_ipsum()+labs(fill="Sac", x = "Lifespan (years)")+ggtitle("Lifespan Distribution of Males by Sac")
+print(dis.lifespan.M.L)
+
+kruskal.test(lifespan ~ SAC, data = m.cage)
+```
+
+## Ridgeplot of date of birth distribution for males according to cause of death
+
+```{r}
+dis.DOB.M.L<-m.cage%>%ggplot( aes(x=DOB,y=SAC,fill=SAC)) +geom_density_ridges() +   theme_ridges() +   theme(legend.position = "none") +scale_fill_manual(values=c("#69b3a2", "#404080","#CA6024","#F05151","#258EF8","#F825C5")) +theme_ipsum() +labs(fill="SAC")+ggtitle("Birthdate Distribution of Males by Sac")
+print(dis.DOB.M.L)
+
+kruskal.test(as.numeric(m.cage$DOB) ~ m.cage$SAC)
+```
+
+
+## Ridgeplot of death date distribution for males according to cause of death
+
+```{r}
+dis.Death.M<-m.death%>%filter(lifespan>0)%>%ggplot( aes(x=Death_date,y=SAC,fill=SAC)) +geom_density_ridges() +   theme_ridges() +   theme(legend.position = "none") +scale_fill_manual(values=c("#69b3a2", "#CA6024","#F05151","#258EF8","#F825C5")) +theme_ipsum() +ggtitle("Death Date Distribution of Males by Sac")
+print(dis.Death.M)
+
+kruskal.test(as.numeric(m.death$Death_date) ~ m.death$SAC)
+```
+
+## One more Ridge plot to save for the paper
+## Ridge Plot of Lifespan distrbution according to cause of death
+Euthanized animals in green
+natural death animals in blue
+living animals in orange
+
+```{r}
+step.4$SAC <- factor(step.4$SAC, levels=c('Euthanized', 'Natural Death', 'Living', 'Right censored'))
+plot<-step.4%>%filter(!SAC %in% c("Unknown"))%>%ggplot( aes(x=lifespan/365.25,y=SAC,fill=SAC)) +geom_density_ridges(rel_min_height = 0.01) +
+  # xlim (0, 12) +
+  theme_ridges() +
+  theme(legend.position = "none") +scale_fill_manual(values=c("#69b3a2", "#404080","#CA6024","#F05151","#258EF8","#F825C5")) +labs(fill="Cause Of Death", x = "Lifespan (years)")+ggtitle("Lifespan Distribution by Sac ")
+print(plot)
+
+
+```
+NOTE from 05/05/2026
+After feedback from the co-authors, we decided that this plot needs to be modified, as right now, the smoothing shows negative lifespans. I will generate a few options to see what people like best. 
+
+
+```{r}
+step.4$SAC <- factor(step.4$SAC, levels=c('Euthanized', 'Natural Death', 'Living', 'Right censored'))
+plot1<-step.4%>%filter(!SAC %in% c("Right censored"))%>%
+  ggplot( aes(x=lifespan/365.25, y=SAC,fill=SAC, height = after_stat(density))) +
+  geom_density_ridges(stat = "density") +
+  theme_ridges() +
+  theme(legend.position = "none") +
+    scale_fill_manual(values=c("#69b3a2", "#404080","#CA6024","#F05151","#258EF8","#F825C5")) + 
+    labs(fill="Cause Of Death", x = "Lifespan (years)") +
+    ggtitle("Lifespan Distribution by Sac")
+  
+print(plot1)
+
+step.4$SAC <- factor(step.4$SAC, levels=c('Euthanized', 'Natural Death', 'Living', 'Right censored'))
+plot2<-step.4%>%filter(!SAC %in% c("Right censored"))%>%
+  ggplot( aes(x=lifespan/365.25, y=SAC,fill=SAC, height = after_stat(density))) +
+  geom_density_ridges(stat = "binline", scale = 0.95) +
+  theme_ridges() +
+  theme(legend.position = "none") +
+    scale_fill_manual(values=c("#69b3a2", "#404080","#CA6024","#F05151","#258EF8","#F825C5")) + 
+    labs(fill="Cause Of Death", x = "Lifespan (years)") +
+    ggtitle("Lifespan Distribution by Sac")
+  
+print(plot2)
+
+```
+Sent to co-authors on 5/5/2026. We decided to use plot2 for the paper. 
+
+
+```{r}
+#T.belangeri ridge plot by cause of death
+pdf(file = "Ridge.plot2.SAC.pdf", width = 8, height = 5)
+
+plot2
+
+dev.off()
+
+```
+
+NOTE: Theme ipsum used in all these ridge plots means it can't be exported to pdf due to an issue with the fonts. Removing the theme fixes that. 
+
+We also need some information about how many animals we have that are in various age classes, particularly to see how many we have in the older age classes. This bit of code will give us a summary table. 
+
+```{r}
+table(step.4$Sex,step.4$SAC) # checking how many animals per "death type"
+
+# Create bins and count
+result <- step.4 %>%
+  filter (!is.na(lifespan)) %>%
+  mutate(bin = cut(lifespan, breaks = c(0,365.25, 2*365.25, 3*365.25, 4*365.25, 5*365.25, 6*365.25, 7*365.25))) %>%
+  group_by(bin) %>%
+  summarise(count = n())
+
+print(result)
+
+step.4 %>% 
+  mutate (SAC = as.factor(SAC)) %>% 
+  filter (lifespan > 365.25*7) %>% 
+  summary()
+
+step.4 %>% 
+  mutate (SAC = as.factor(SAC)) %>% 
+  filter (lifespan > 365.25*6) %>% 
+  summary()
+
+step.4 %>% 
+  mutate (SAC = as.factor(SAC)) %>% 
+  filter (lifespan > 365.25*5) %>% 
+  summary()
+
+
+```
+
+
+## Preparing for survival analysis
+Define natural death as uncensored and all other entries as censored
+Natural death encoded as "1", euthanized or living encoded as "0" in SAC column
+```{r}
+# Assuming 'status' is the variable indicating if an animal is alive, with "Alive" as the label
+# dataframe created in line 206
+summary(data.fit)
+
+```
+
+## Survival analysis
+Kaplan Meier plot of survival probability for males and females.
+Natural Death animals are considered uncensored while living and euthanized entries are right censored
+Male survival probability is in red and female survival probability is in blue
+```{r}
+
+surv <- Surv(time = data.fit$lifespan/365.25, event = data.fit$SAC, type = "right")
+fitsex <- survfit(formula= surv ~ Sex, data = data.fit) # uses default Kaplan-Meier
+summary(fitsex)
+kap.sex<-ggsurvplot(
+  fit = fitsex, 
+  data = data.fit,
+  pval = TRUE, 
+  surv.median.line = "hv",
+  xlab = "Survival time (years)", 
+  ylab = "Survival probability", 
+  title = "Kaplan Meier's Plot by Sex"
+  )
+print(kap.sex)
+
+# Exporting the file
+pdf(file = "Kaplan_Meier_all.pdf", width = 8, height = 5)
+
+kap.sex
+
+dev.off()
+```
+
+## Additional test for lifespan differences
+```{r}
+# Comparing the lifespan curves
+log_rank_test <- survdiff(Surv(lifespan, SAC) ~ Sex, data = data.fit)
+log_rank_test
+
+# Comparing median lifespan
+wilcox.test(lifespan ~ Sex, alternative = "greater", data = data.fit)
+```
+
+
+```{r}
+
+# Assuming `lifespan` is your survival time variable and `Sex` is coded as 'F' and 'M'
+surv_object <- Surv(time = data.fit$lifespan/365.25, event = data.fit$SAC)  # Replace 'event' with your event indicator
+
+# Fit Kaplan-Meier survival curves, stratified by Sex
+km_fit <- survfit(surv_object ~ Sex, data = data.fit)
+
+# Plot the Kaplan-Meier curves
+ggsurvplot(km_fit,
+           data = data.fit,
+           pval = TRUE,                  # Show p-value for log-rank test
+           conf.int = TRUE,              # Add confidence intervals
+           risk.table = TRUE,            # Add risk table below the plot
+           legend.labs = c("Female", "Male"), # Adjust labels
+           ggtheme = theme_minimal())    # Set theme
+
+```
+
+
+
+```{r}
+# Fit Kaplan-Meier survival curves for males and females
+km_fit <- survfit(Surv(lifespan/365.25, SAC) ~ Sex, data = data.fit)
+
+# Define quantiles of interest (e.g., 50% and 25%)
+quantile_probs <- c(0.25, 0.5,0.75)
+
+# Extract survival times corresponding to the quantiles for each group
+surv_times <- quantile(km_fit, probs = quantile_probs)
+
+# Display survival times at 50% and 25% survival for each group
+print(surv_times)
+
+# Calculate the absolute difference in survival times between groups at these quantiles
+# Example: Difference in survival probability at specific time points (when 25% or 50% are left)
+female_surv <- km_fit$surv[km_fit$strata == "Sex=F"]
+male_surv <- km_fit$surv[km_fit$strata == "Sex=M"]
+
+# Calculate differences at median survival and 25% survival points
+median_diff <- abs(female_surv - male_surv)
+quantile_diff <- abs(female_surv[quantile_probs == 0.5] - male_surv[quantile_probs == 0.5])
+
+# Display differences
+median_diff
+quantile_diff
+
+```
+## Looking only at Natural deaths
+```{r}
+rm(surv)
+rm(fitsex)
+rm(kap.sex)
+rm(log_rank_test)
+nd_data <-data.fit %>% filter(SAC == "1")
+surv <- Surv(time = nd_data$lifespan/365.25, event = nd_data$SAC, type = "right")
+fitsex <- survfit(formula= surv ~ Sex, data = nd_data) # uses default Kaplan-Meier
+summary(fitsex)
+kap.sex<-ggsurvplot(
+  fit = fitsex, 
+  data = nd_data,
+  pval = TRUE, 
+  surv.median.line = "hv",
+  xlab = "Survival time (years)", 
+  ylab = "Survival probability", 
+  title = "Kaplan Meier's Plot by Sex"
+  )
+print(kap.sex)
+
+# Exporting the file
+pdf(file = "Kaplan_Meier_natural.pdf", width = 8, height = 5)
+
+kap.sex
+
+dev.off()
+
+# Comparing the lifespan curves
+log_rank_test <- survdiff(Surv(lifespan, SAC) ~ Sex, data = nd_data)
+log_rank_test
+
+# Comparing median lifespan
+wilcox.test(lifespan ~ Sex, alternative = "greater", data = nd_data)
+```
+
+## And looking at animals that are natural deaths and alive
+```{r}
+rm(surv)
+rm(fitsex)
+rm(kap.sex)
+rm(log_rank_test)
+nda_data <-step.4 %>% filter(SAC != "Euthanized") %>%mutate(SAC=ifelse(!SAC=="Natural Death",0,1))%>%mutate_if(is.character,as_factor)
+summary(nda_data)
+surv <- Surv(time = nda_data$lifespan/365.25, event = nda_data$SAC, type = "right")
+fitsex <- survfit(formula= surv ~ Sex, data = nda_data) # uses default Kaplan-Meier
+summary(fitsex)
+kap.sex<-ggsurvplot(
+  fit = fitsex, 
+  data = nda_data,
+  pval = TRUE, 
+  surv.median.line = "hv",
+  xlab = "Survival time (years)", 
+  ylab = "Survival probability", 
+  title = "Kaplan Meier's Plot by Sex"
+  )
+print(kap.sex)
+
+# Exporting the file
+pdf(file = "Kaplan_Meier_excluding_euth.pdf", width = 8, height = 5)
+
+kap.sex
+
+dev.off()
+
+# Comparing the lifespan curves
+log_rank_test <- survdiff(Surv(lifespan, SAC) ~ Sex, data = nda_data)
+log_rank_test
+
+# Comparing median lifespan
+wilcox.test(lifespan ~ Sex, alternative = "greater", data = nda_data)
+```
+# Looking at maximum lifespan differences
+Fisher's test for maximum lifespan (Wang 2004)
+```{r}
+# compute 90th percentile cutoff from pooled distribution
+cutoff <- quantile(data.fit$lifespan, 0.9, na.rm = TRUE)
+
+
+  # classify long-lived vs not
+  df <- data.fit %>%
+    mutate(
+      top10 = ifelse(lifespan >= cutoff, "yes", "no"),
+      group = Sex
+    )
+
+  # build contingency table
+  tab <- table(df$group, df$top10)
+
+  # run fisher test
+  ft <- fisher.test(tab)
+  ft
+
+  
+# Doing the same with the natural death only data
+rm(cutoff, df, tab, ft)
+
+cutoff <- quantile(nd_data$lifespan, 0.9, na.rm = TRUE)
+
+  df <- nd_data %>%
+    mutate(
+      top10 = ifelse(lifespan >= cutoff, "yes", "no"),
+      group = Sex
+    )
+
+  tab <- table(df$group, df$top10)
+
+  ft <- fisher.test(tab)
+  ft
+  
+# And with the alive and natural death animals
+rm(cutoff, df, tab, ft)
+
+cutoff <- quantile(nda_data$lifespan, 0.9, na.rm = TRUE)
+
+  df <- nda_data %>%
+    mutate(
+      top10 = ifelse(lifespan >= cutoff, "yes", "no"),
+      group = Sex
+    )
+
+  tab <- table(df$group, df$top10)
+
+  ft <- fisher.test(tab)
+  ft  
+```
+ 
+
+# Mortality analysis
+I'll make the mortality curves and test for differences. 
+
+```{r}
+# 0 Recode Status to numeric (Dead = 1, others = 0)
+# This first attempt only has natural death data.
+summary(nd_data)
+
+# 1 Function: actuarial/demography life table at event times
+make_demography_lifetable <- function(subdf, time_col = "lifespan", status_col = "SAC") {
+  # keep only rows with non-missing Death_Day/status
+  subdf <- subdf %>% filter(!is.na(.data[[time_col]]), !is.na(.data[[status_col]])) %>%
+    arrange(.data[[time_col]])
+  
+  # fit KM for this subgroup
+  fit <- survfit(Surv(subdf[[time_col]], subdf[[status_col]]) ~ 1)
+  s <- summary(fit)
+
+  # event times and counts
+  X  <- s$time                      # age/time at each event step
+  nx <- s$n.risk                    # at risk just before the step
+  dx <- s$n.event                   # deaths in the step
+
+  # survivorship (relative to cohort start)
+  l0 <- nx[1]
+  lx <- nx / l0
+
+  # conditional death probability over the step
+  qx <- dx / nx
+
+  # interval widths: from previous event time to current
+  dt <- c(X[1], diff(X))
+  dt[dt <= 0] <- NA_real_  # guard against zero/negative widths
+
+  # force of mortality (piecewise-constant hazard)
+  eps <- 1e-12
+  qx_clamped <- pmin(pmax(qx, eps), 1 - eps)
+  ux <- -log1p(-qx_clamped) / dt
+  ln_ux <- log(ux)
+
+  tibble(
+    X      = X,
+    nx     = nx,
+    dx     = dx,
+    lx     = lx,
+    qx     = qx,
+    ux     = ux,
+    `ln(ux)` = ln_ux)
+}
+
+# 2 Build life tables for each sex
+nd_data$Sex <- as.character(nd_data$Sex)
+lifetables <- nd_data %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  set_names(map_chr(., ~ unique(.x$Sex))) %>%
+  map(~ make_demography_lifetable(.x, time_col = "lifespan", status_col = "SAC"))
+
+# 3 Optional: long-format table for plotting or export
+lifetables_long <- lifetables %>%
+  imap_dfr(~ mutate(.x, group = .y)) %>%
+  separate(group, into = "Sex", sep = " ", remove = TRUE)
+
+# 4 Make Gompertz model predictions
+
+# Empty list to store hazard predictions
+gompertz_preds <- list()
+
+# Loop over each  sex
+  for(s in unique(nd_data$Sex)) {
+    # Subset data
+    subdf <- nd_data %>% filter(Sex == s)
+    
+    # Fit Gompertz: flexsurvreg expects Surv(time, status)
+    fit <- flexsurvreg(Surv(lifespan/365.25, SAC) ~ 1, data = subdf, dist = "gompertz")
+    
+    # Extract fitted parameters
+    # "shape" = beta, "rate" = eta in flexsurv
+    shape <- fit$res["shape","est"]
+    rate  <- fit$res["rate","est"]
+    
+    # Prediction times
+    times <- seq(0, max(subdf$lifespan/365.5, na.rm = TRUE), by = 1)
+    
+    # Compute hazard at each time
+    hazard <- hgompertz(times, shape = shape, rate = rate)
+    
+    # Store in a data frame
+    gompertz_preds[[paste(s, sep = "_")]] <- data.frame(
+      X = times,
+      hazard = hazard,
+      Sex = s)}
+
+# Combine all predictions into one long data frame
+gompertz_preds_df <- bind_rows(gompertz_preds)
+
+
+# 5 Age-specific mortality plot faceted by sex
+mortality <- ggplot(lifetables_long, aes(x = X/365.25, y = ux, color = Sex)) +
+  geom_point(size = 2, alpha = 0.5) +   # semi-transparent points
+  geom_line(
+    data = gompertz_preds_df,
+    aes(x = X, y = hazard, color = Sex),
+    size = 1.5,                         # thicker lines
+    linetype = "solid") +                   # solid line for visibility
+  # scale_color_manual(values = genotype_colors) +
+  labs(
+    x = "Age (years)",
+    y = "Mortality rate",
+    color = "Sex",
+    title = "Age-specific mortality with Gompertz hazard") +
+  ylim(0, .5) +
+  theme_minimal(base_size = 14)
+mortality
+
+```
+Ok, so this plots, but it's not correct, and I think it has to do with the way I encoded lifespan as years vs. days. I need to fix that. I am not sure years is the way to go, as that just gives me 7 time points to work with... Maybe I should try months, but that's still about 300 intervals, and I likely don't have enough data for that. Maybe every 6 months or every 3 months???  If I do 6 months, then I will have about 20 intervals.... That's 182.625 days, so I need to divide my lifespan by that number...
+
+I will try that first, and then also go to include all data, not just the natural deaths. 
+
+```{r}
+# Remove the variables so I can reuse them without trouble.
+rm(make_demography_lifetable, lifetables, gompertz_preds, gompertz_preds_df, mortality)
+
+# 0 Recode Status to numeric (Dead = 1, others = 0)
+# This first attempt only has natural death data.
+summary(nd_data)
+# Changing lifespan to 3 month intervals
+nd_data2 <- nd_data
+nd_data2$lifespan <- nd_data2$lifespan/91.3125
+
+# 1 Function: actuarial/demography life table at event times
+make_demography_lifetable <- function(subdf, time_col = "lifespan", status_col = "SAC") {
+  # keep only rows with non-missing Death_Day/status
+  subdf <- subdf %>% filter(!is.na(.data[[time_col]]), !is.na(.data[[status_col]])) %>%
+    arrange(.data[[time_col]])
+  
+  # fit KM for this subgroup
+  fit <- survfit(Surv(subdf[[time_col]], subdf[[status_col]]) ~ 1)
+  s <- summary(fit)
+
+  # event times and counts
+  X  <- s$time                      # age/time at each event step
+  nx <- s$n.risk                    # at risk just before the step
+  dx <- s$n.event                   # deaths in the step
+
+  # survivorship (relative to cohort start)
+  l0 <- nx[1]
+  lx <- nx / l0
+
+  # conditional death probability over the step
+  qx <- dx / nx
+
+  # interval widths: from previous event time to current
+  dt <- c(X[1], diff(X))
+  dt[dt <= 0] <- NA_real_  # guard against zero/negative widths
+
+  # force of mortality (piecewise-constant hazard)
+  eps <- 1e-12
+  qx_clamped <- pmin(pmax(qx, eps), 1 - eps)
+  ux <- -log1p(-qx_clamped) / dt
+  ln_ux <- log(ux)
+
+  tibble(
+    X      = X,
+    nx     = nx,
+    dx     = dx,
+    lx     = lx,
+    qx     = qx,
+    ux     = ux,
+    `ln(ux)` = ln_ux)
+}
+
+# 2 Build life tables for each sex
+nd_data2$Sex <- as.character(nd_data2$Sex)
+lifetables <- nd_data2 %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  set_names(map_chr(., ~ unique(.x$Sex))) %>%
+  map(~ make_demography_lifetable(.x, time_col = "lifespan", status_col = "SAC"))
+
+# 3 Optional: long-format table for plotting or export
+lifetables_long <- lifetables %>%
+  imap_dfr(~ mutate(.x, group = .y)) %>%
+  separate(group, into = "Sex", sep = " ", remove = TRUE)
+
+# 4 Make Gompertz model predictions
+
+# Empty list to store hazard predictions
+gompertz_preds <- list()
+
+# Loop over each  sex
+  for(s in unique(nd_data2$Sex)) {
+    # Subset data
+    subdf <- nd_data2 %>% filter(Sex == s)
+    
+    # Fit Gompertz: flexsurvreg expects Surv(time, status)
+    fit <- flexsurvreg(Surv(lifespan, SAC) ~ 1, data = subdf, dist = "gompertz")
+    
+    # Extract fitted parameters
+    # "shape" = beta, "rate" = eta in flexsurv
+    shape <- fit$res["shape","est"]
+    rate  <- fit$res["rate","est"]
+    
+    # Prediction times
+    times <- seq(0, max(subdf$lifespan, na.rm = TRUE), by = 1)
+    
+    # Compute hazard at each time
+    hazard <- hgompertz(times, shape = shape, rate = rate)
+    
+    # Store in a data frame
+    gompertz_preds[[paste(s, sep = "_")]] <- data.frame(
+      X = times,
+      hazard = hazard,
+      Sex = s)}
+
+# Combine all predictions into one long data frame
+gompertz_preds_df <- bind_rows(gompertz_preds)
+
+
+# 5 Age-specific mortality plot faceted by sex
+mortality <- ggplot(lifetables_long, aes(x = X, y = ux, color = Sex)) +
+  geom_point(size = 2, alpha = 0.5) +   # semi-transparent points
+  geom_line(
+    data = gompertz_preds_df,
+    aes(x = X, y = hazard, color = Sex),
+    size = 1.5,                         # thicker lines
+    linetype = "solid") +                   # solid line for visibility
+  # scale_color_manual(values = genotype_colors) +
+  labs(
+    x = "Age (quarters)",
+    y = "Mortality rate",
+    color = "Sex",
+    title = "Age-specific mortality with Gompertz hazard") +
+  ylim(0, .5) +
+  theme_minimal(base_size = 14)
+mortality
+
+```
+This does look better. 
+
+So, next, I will try this with all the data. 
+```{r}
+# Remove the variables so I can reuse them without trouble.
+rm(make_demography_lifetable, lifetables, gompertz_preds, gompertz_preds_df, mortality)
+rm(nd_data2)
+
+# 0 Recode Status to numeric (Dead = 1, others = 0)
+
+# Changing lifespan to 3 month intervals
+nd_data2 <- data.fit
+nd_data2$lifespan <- nd_data2$lifespan/91.3125
+
+# 1 Function: actuarial/demography life table at event times
+make_demography_lifetable <- function(subdf, time_col = "lifespan", status_col = "SAC") {
+  # keep only rows with non-missing Death_Day/status
+  subdf <- subdf %>% filter(!is.na(.data[[time_col]]), !is.na(.data[[status_col]])) %>%
+    arrange(.data[[time_col]])
+  
+  # fit KM for this subgroup
+  fit <- survfit(Surv(subdf[[time_col]], subdf[[status_col]]) ~ 1)
+  s <- summary(fit)
+
+  # event times and counts
+  X  <- s$time                      # age/time at each event step
+  nx <- s$n.risk                    # at risk just before the step
+  dx <- s$n.event                   # deaths in the step
+
+  # survivorship (relative to cohort start)
+  l0 <- nx[1]
+  lx <- nx / l0
+
+  # conditional death probability over the step
+  qx <- dx / nx
+
+  # interval widths: from previous event time to current
+  dt <- c(X[1], diff(X))
+  dt[dt <= 0] <- NA_real_  # guard against zero/negative widths
+
+  # force of mortality (piecewise-constant hazard)
+  eps <- 1e-12
+  qx_clamped <- pmin(pmax(qx, eps), 1 - eps)
+  ux <- -log1p(-qx_clamped) / dt
+  ln_ux <- log(ux)
+
+  tibble(
+    X      = X,
+    nx     = nx,
+    dx     = dx,
+    lx     = lx,
+    qx     = qx,
+    ux     = ux,
+    `ln(ux)` = ln_ux)
+}
+
+# 2 Build life tables for each sex
+nd_data2$Sex <- as.character(nd_data2$Sex)
+lifetables <- nd_data2 %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  set_names(map_chr(., ~ unique(.x$Sex))) %>%
+  map(~ make_demography_lifetable(.x, time_col = "lifespan", status_col = "SAC"))
+
+# 3 Optional: long-format table for plotting or export
+lifetables_long <- lifetables %>%
+  imap_dfr(~ mutate(.x, group = .y)) %>%
+  separate(group, into = "Sex", sep = " ", remove = TRUE)
+
+# 4 Make Gompertz model predictions
+
+# Empty list to store hazard predictions
+gompertz_preds <- list()
+
+# Loop over each  sex
+  for(s in unique(nd_data2$Sex)) {
+    # Subset data
+    subdf <- nd_data2 %>% filter(Sex == s)
+    
+    # Fit Gompertz: flexsurvreg expects Surv(time, status)
+    fit <- flexsurvreg(Surv(lifespan, SAC) ~ 1, data = subdf, dist = "gompertz")
+    
+    # Extract fitted parameters
+    # "shape" = beta, "rate" = eta in flexsurv
+    shape <- fit$res["shape","est"]
+    rate  <- fit$res["rate","est"]
+    
+    # Prediction times
+    times <- seq(0, max(subdf$lifespan, na.rm = TRUE), by = 1)
+    
+    # Compute hazard at each time
+    hazard <- hgompertz(times, shape = shape, rate = rate)
+    
+    # Store in a data frame
+    gompertz_preds[[paste(s, sep = "_")]] <- data.frame(
+      X = times,
+      hazard = hazard,
+      Sex = s)}
+
+# Combine all predictions into one long data frame
+gompertz_preds_df <- bind_rows(gompertz_preds)
+
+
+# 5 Age-specific mortality plot faceted by sex
+# I plotted the age in years, despite doing the analysis with quarters.
+mortality <- ggplot(lifetables_long, aes(x = X/4, y = ux, color = Sex)) +
+  geom_point(size = 2, alpha = 0.5) +   # semi-transparent points
+  geom_line(
+    data = gompertz_preds_df,
+    aes(x = X/4, y = hazard, color = Sex),
+    size = 1.5,                         # thicker lines
+    linetype = "solid") +                   # solid line for visibility
+  # scale_color_manual(values = genotype_colors) +
+  labs(
+    x = "Age (years)",
+    y = "Mortality rate",
+    color = "Sex",
+    title = "Age-specific mortality with Gompertz hazard") +
+  ylim(0, .5) +
+  theme_minimal(base_size = 14)
+mortality
+
+# Exporting the file
+pdf(file = "Mortality.pdf", width = 8, height = 5)
+
+mortality
+
+dev.off()
+
+```
+
+
+Next, I want to try and extract the mortality measures, shape and rate parameters from the model, and test for sex differences. 
+
+```{r}
+fit <- flexsurvreg(
+  Surv(lifespan, SAC) ~ Sex,
+  data = nd_data2,
+  dist = "gompertz",
+  anc = list(shape = ~ Sex)
+)
+
+coef_table <- fit$coefficients
+vcov_mat <- vcov(fit)
+
+library(tibble)
+library(dplyr)
+
+# Wald test
+pvalues_table <- tibble(
+  term = names(coef_table),
+  estimate = coef_table,
+  se = sqrt(diag(vcov_mat))
+) %>%
+  mutate(
+    z = estimate / se,
+    p_value = 2 * (1 - pnorm(abs(z)))
+  )
+
+pvalues_table <- pvalues_table %>%
+  mutate(
+    parameter = ifelse(grepl("^shape", term), "shape", "rate"),
+    effect = gsub("shape:|Sex", "", term)
+  )
+
+pvalues_table
+# "Aging rate (shape)", "Baseline hazard (rate)"
+```
+
+
+05/07/2026
+After discussions with the co-authors, I need to try to run the mortality analysis differently - I need to actually create "bins" or time periods to record deaths in, so that I don't end up with unique time values, but instead intervals where, ideally, there is a death in each interval. So, I will again take the values that I had for lifespan, and divided them by 6 months or 182.625 days, but then, I will round this number up to the next integer to know which quarter the animals died in. And then, I will redo the analysis. 
+
+## Prepping the data
+```{r}
+new.data <- data.fit %>% mutate(lifespan = ceiling(lifespan/(182.625)))
+```
+
+## Sanity check to make sure nothing weird happened with the survival analysis
+```{r}
+surv <- Surv(time = new.data$lifespan, event = new.data$SAC, type = "right")
+fitsex <- survfit(formula= surv ~ Sex, data = new.data) # uses default Kaplan-Meier
+summary(fitsex)
+kap.sex<-ggsurvplot(
+  fit = fitsex, 
+  data = new.data,
+  pval = TRUE, 
+  surv.median.line = "hv",
+  xlab = "Survival time (6 months)", 
+  ylab = "Survival probability", 
+  title = "Kaplan Meier's Plot by Sex"
+  )
+print(kap.sex)
+
+# Exporting the file
+pdf(file = "Kaplan_Meier_all_6_months.pdf", width = 8, height = 5)
+
+kap.sex
+
+dev.off()
+```
+Looks the same as before, sanity check complete. 
+
+
+## Mortality again
+
+So, next, I will try this with all the data. After some trial and error, I arrived at 6-month bins. 
+```{r}
+# Remove the variables so I can reuse them without trouble.
+rm(make_demography_lifetable, lifetables, gompertz_preds, gompertz_preds_df, mortality)
+rm(nd_data2)
+
+# 0 Recode Status to numeric (Dead = 1, others = 0)
+
+# Changing lifespan to 6 month intervals
+nd_data2 <- data.fit
+nd_data2$lifespan <- ceiling(nd_data2$lifespan/(91.3125*2))
+
+# 1 Function: actuarial/demography life table at event times
+make_demography_lifetable <- function(subdf, time_col = "lifespan", status_col = "SAC") {
+  # keep only rows with non-missing Death_Day/status
+  subdf <- subdf %>% filter(!is.na(.data[[time_col]]), !is.na(.data[[status_col]])) %>%
+    arrange(.data[[time_col]])
+  
+  # fit KM for this subgroup
+  fit <- survfit(Surv(subdf[[time_col]], subdf[[status_col]]) ~ 1)
+  s <- summary(fit)
+
+  # event times and counts
+  X  <- s$time                      # age/time at each event step
+  nx <- s$n.risk                    # at risk just before the step
+  dx <- s$n.event                   # deaths in the step
+
+  # survivorship (relative to cohort start)
+  l0 <- nx[1]
+  lx <- nx / l0
+
+  # conditional death probability over the step
+  qx <- dx / nx
+
+  # interval widths: from previous event time to current
+  dt <- c(X[1], diff(X))
+  dt[dt <= 0] <- NA_real_  # guard against zero/negative widths
+
+  # force of mortality (piecewise-constant hazard)
+  eps <- 1e-12
+  qx_clamped <- pmin(pmax(qx, eps), 1 - eps)
+  ux <- -log1p(-qx_clamped) / dt
+  ln_ux <- log(ux)
+
+  tibble(
+    X      = X,
+    nx     = nx,
+    dx     = dx,
+    lx     = lx,
+    qx     = qx,
+    ux     = ux,
+    `ln(ux)` = ln_ux)
+}
+
+# 2 Build life tables for each sex
+nd_data2$Sex <- as.character(nd_data2$Sex)
+lifetables <- nd_data2 %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  set_names(map_chr(., ~ unique(.x$Sex))) %>%
+  map(~ make_demography_lifetable(.x, time_col = "lifespan", status_col = "SAC"))
+
+# 3 Optional: long-format table for plotting or export
+lifetables_long <- lifetables %>%
+  imap_dfr(~ mutate(.x, group = .y)) %>%
+  separate(group, into = "Sex", sep = " ", remove = TRUE)
+
+# 4 Make Gompertz model predictions
+
+# Empty list to store hazard predictions
+gompertz_preds <- list()
+
+# Loop over each  sex
+  for(s in unique(nd_data2$Sex)) {
+    # Subset data
+    subdf <- nd_data2 %>% filter(Sex == s)
+    
+    # Fit Gompertz: flexsurvreg expects Surv(time, status)
+    fit <- flexsurvreg(Surv(lifespan, SAC) ~ 1, data = subdf, dist = "gompertz")
+    
+    # Extract fitted parameters
+    # "shape" = beta, "rate" = eta in flexsurv
+    shape <- fit$res["shape","est"]
+    rate  <- fit$res["rate","est"]
+    
+    # Prediction times
+    times <- seq(0, max(subdf$lifespan, na.rm = TRUE), by = 1)
+    
+    # Compute hazard at each time
+    hazard <- hgompertz(times, shape = shape, rate = rate)
+    
+    # Store in a data frame
+    gompertz_preds[[paste(s, sep = "_")]] <- data.frame(
+      X = times,
+      hazard = hazard,
+      Sex = s)}
+
+# Combine all predictions into one long data frame
+gompertz_preds_df <- bind_rows(gompertz_preds)
+
+
+# 5 Age-specific mortality plot faceted by sex
+# I plotted the age in years, despite doing the analysis with quarters.
+mortality <- ggplot(lifetables_long, aes(x = X/2, y = ux, color = Sex)) +
+  geom_point(size = 2, alpha = 0.5) +   # semi-transparent points
+  geom_line(
+    data = gompertz_preds_df,
+    aes(x = X/2, y = hazard, color = Sex),
+    size = 1.5,                         # thicker lines
+    linetype = "solid") +                   # solid line for visibility
+  # scale_color_manual(values = genotype_colors) +
+  labs(
+    x = "Age (years)",
+    y = "Mortality rate",
+    color = "Sex",
+    title = "Age-specific mortality with Gompertz hazard") +
+  ylim(0, .5) +
+  theme_minimal(base_size = 14)
+mortality
+
+# Exporting the file
+pdf(file = "Mortality_semi.pdf", width = 8, height = 5)
+
+mortality
+
+dev.off()
+
+```
+
+This looks good, and based on the information below, I have deaths in each bin other than the last one. 
+
+```{r}
+nd_data2 %>%
+     filter (!is.na(lifespan)) %>%
+     mutate(bin = cut(lifespan, breaks = 21)) %>%
+     group_by(bin) %>%
+     summarise(count = n()) %>%
+     print(n=21)
+```
+
+Next step is to actually compare the model parameters. 
+
+Next, I want to try and extract the mortality measures, shape and rate parameters from the model, and test for sex differences. 
+
+```{r}
+rm(fit, coef_table, vcov_mat, pvalues_table)
+
+fit <- flexsurvreg(
+  Surv(lifespan, SAC) ~ Sex,
+  data = nd_data2,
+  dist = "gompertz",
+  anc = list(shape = ~ Sex)
+)
+
+coef_table <- fit$coefficients
+vcov_mat <- vcov(fit)
+
+library(tibble)
+library(dplyr)
+
+# Wald test
+pvalues_table <- tibble(
+  term = names(coef_table),
+  estimate = coef_table,
+  se = sqrt(diag(vcov_mat))
+) %>%
+  mutate(
+    z = estimate / se,
+    p_value = 2 * (1 - pnorm(abs(z)))
+  )
+
+pvalues_table <- pvalues_table %>%
+  mutate(
+    parameter = ifelse(grepl("^shape", term), "shape", "rate"),
+    effect = gsub("shape:|Sex", "", term)
+  )
+
+pvalues_table
+# "Aging rate (shape)", "Baseline hazard (rate)"
+```
+
+## Getting some additional information for plots
+In line 553, I made a survfit object called fitsex that contains the fitted Kaplan-Meier data for both sexes. I want to extract the survival table from that object for each sex. 
+
+```{r}
+summary(fitsex) # To check if the object looks ok
+
+table_fitsex <- surv_summary(fitsex)
+
+# Export to xlsx
+
+write_xlsx(table_fitsex, "Tree_shrew_fit.xlsx")
+
+
+```
+
+A couple more basic stats for the manuscript
+```{r}
+# Summary stats for the lifespan analysis
+# Removes anyone without lifespan
+y <- step.4 %>% filter (!is.na(lifespan))
+y[y[,8] == "L",8] <-"Living"
+y[y[,8] == "Y",8] <-"Euthanized"
+y[y[,8] == "N",8] <-"Natural Death"
+y[y[,8] == "",8] <-"Unknown"
+table(y$Sex,y$SAC)
+```
+y has the same rows than data.fit, but it retains the information about deaths, rather than just classifying them as censored or not. 
+
+###################################################################################################
+## Final analysis for manuscript
+###################################################################################################
+
+## Lifespan and mortality analysis excluding immature animals - final analysis used in manuscript
+I talked to Anne, and she suggested that it is best practice to exclude animals that are not sexually mature yet. So, I need to exlcude animals that are less than 4-5 months old. Given that I start with a 6 months bin, I should exclude the first bin. I recoded lifespan to start at 6 months, which I will need to fix when making final plots etc. 
+
+```{r}
+# Make the new data frame
+# Filtering out deaths from the first 6 months; setting 0 to 6-months for modeling
+rm(surv, fitsex, kap.sex)
+new.data2 <- new.data %>% filter (lifespan >1) %>% mutate(lifespan = lifespan-1)
+
+
+surv <- Surv(time = new.data2$lifespan, event = new.data2$SAC, type = "right")
+fitsex <- survfit(formula= surv ~ Sex, data = new.data2) # uses default Kaplan-Meier
+summary(fitsex)
+kap.sex<-ggsurvplot(
+  fit = fitsex, 
+  data = new.data2,
+  pval = TRUE, 
+  surv.median.line = "hv",
+  xlab = "Survival time (6 months)", 
+  ylab = "Survival probability", 
+  title = "Kaplan Meier's Plot by Sex"
+  )
+print(kap.sex)
+
+rm(surv_times)
+surv_times <- quantile(fitsex, probs = quantile_probs)
+surv_times
+
+# Exporting the file
+pdf(file = "Kaplan_Meier_all_6_months_mature.pdf", width = 8, height = 5)
+
+kap.sex
+
+dev.off()
+
+# Comparing the lifespan curves
+log_rank_test <- survdiff(surv ~ Sex, data = new.data2)
+log_rank_test
+
+# Comparing median lifespan
+wilcox.test(lifespan ~ Sex, alternative = "greater", data = new.data2)
+
+
+```
+## Getting some additional information for plots
+In line 1418, I made a survfit object called fitsex that contains the fitted Kaplan-Meier data for both sexes. I want to extract the survival table from that object for each sex. 
+
+```{r}
+summary(fitsex) # To check if the object looks ok
+
+table_fitsex <- surv_summary(fitsex)
+
+# Export to xlsx
+
+write_xlsx(table_fitsex, "Tree_shrew_fit.xlsx")
+
+
+```
+
+
+# Looking at maximum lifespan differences
+Fisher's test for maximum lifespan (Wang 2004)
+```{r}
+# compute 90th percentile cutoff from pooled distribution
+cutoff <- quantile(new.data2$lifespan, 0.9, na.rm = TRUE)
+
+
+  # classify long-lived vs not
+  df <- new.data2 %>%
+    mutate(
+      top10 = ifelse(lifespan >= cutoff, "yes", "no"),
+      group = Sex
+    )
+
+  # build contingency table
+  tab <- table(df$group, df$top10)
+
+  # run fisher test
+  ft <- fisher.test(tab)
+  ft
+
+```
+
+And now using these same filtered, mature animal only data for mortality analysis.
+ 
+```{r}
+# Remove the variables so I can reuse them without trouble.
+rm(make_demography_lifetable, lifetables, gompertz_preds, gompertz_preds_df, mortality)
+rm(nd_data2)
+
+# 0 Recode Status to numeric (Dead = 1, others = 0)
+
+# 1 Function: actuarial/demography life table at event times
+make_demography_lifetable <- function(subdf, time_col = "lifespan", status_col = "SAC") {
+  # keep only rows with non-missing Death_Day/status
+  subdf <- subdf %>% filter(!is.na(.data[[time_col]]), !is.na(.data[[status_col]])) %>%
+    arrange(.data[[time_col]])
+  
+  # fit KM for this subgroup
+  fit <- survfit(Surv(subdf[[time_col]], subdf[[status_col]]) ~ 1)
+  s <- summary(fit)
+
+  # event times and counts
+  X  <- s$time                      # age/time at each event step
+  nx <- s$n.risk                    # at risk just before the step
+  dx <- s$n.event                   # deaths in the step
+
+  # survivorship (relative to cohort start)
+  l0 <- nx[1]
+  lx <- nx / l0
+
+  # conditional death probability over the step
+  qx <- dx / nx
+
+  # interval widths: from previous event time to current
+  dt <- c(X[1], diff(X))
+  dt[dt <= 0] <- NA_real_  # guard against zero/negative widths
+
+  # force of mortality (piecewise-constant hazard)
+  eps <- 1e-12
+  qx_clamped <- pmin(pmax(qx, eps), 1 - eps)
+  ux <- -log1p(-qx_clamped) / dt
+  ln_ux <- log(ux)
+
+  tibble(
+    X      = X,
+    nx     = nx,
+    dx     = dx,
+    lx     = lx,
+    qx     = qx,
+    ux     = ux,
+    `ln(ux)` = ln_ux)
+}
+
+# 2 Build life tables for each sex
+new.data2$Sex <- as.character(new.data2$Sex)
+lifetables <- new.data2 %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  set_names(map_chr(., ~ unique(.x$Sex))) %>%
+  map(~ make_demography_lifetable(.x, time_col = "lifespan", status_col = "SAC"))
+
+# 3 Optional: long-format table for plotting or export
+lifetables_long <- lifetables %>%
+  imap_dfr(~ mutate(.x, group = .y)) %>%
+  separate(group, into = "Sex", sep = " ", remove = TRUE)
+
+# 4 Make Gompertz model predictions
+
+# Empty list to store hazard predictions
+gompertz_preds <- list()
+
+# Loop over each  sex
+  for(s in unique(new.data2$Sex)) {
+    # Subset data
+    subdf <- new.data2 %>% filter(Sex == s)
+    
+    # Fit Gompertz: flexsurvreg expects Surv(time, status)
+    fit <- flexsurvreg(Surv(lifespan, SAC) ~ 1, data = subdf, dist = "gompertz")
+    
+    # Extract fitted parameters
+    # "shape" = beta, "rate" = eta in flexsurv
+    shape <- fit$res["shape","est"]
+    rate  <- fit$res["rate","est"]
+    
+    # Prediction times
+    times <- seq(0, max(subdf$lifespan, na.rm = TRUE), by = 1)
+    
+    # Compute hazard at each time
+    hazard <- hgompertz(times, shape = shape, rate = rate)
+    
+    # Store in a data frame
+    gompertz_preds[[paste(s, sep = "_")]] <- data.frame(
+      X = times,
+      hazard = hazard,
+      Sex = s)}
+
+# Combine all predictions into one long data frame
+gompertz_preds_df <- bind_rows(gompertz_preds)
+
+
+# 5 Age-specific mortality plot faceted by sex
+# I plotted the age in years, despite doing the analysis with 6-month periods
+mortality <- ggplot(lifetables_long, aes(x = X/2, y = ux, color = Sex)) +
+  geom_point(size = 2, alpha = 0.5) +   # semi-transparent points
+  geom_line(
+    data = gompertz_preds_df,
+    aes(x = X/2, y = hazard, color = Sex),
+    size = 1.5,                         # thicker lines
+    linetype = "solid") +                   # solid line for visibility
+  # scale_color_manual(values = genotype_colors) +
+  labs(
+    x = "Age (years)",
+    y = "Mortality rate",
+    color = "Sex",
+    title = "Age-specific mortality with Gompertz hazard") +
+  ylim(0, .5) +
+  theme_minimal(base_size = 14)
+mortality
+
+# Exporting the file
+pdf(file = "Mortality_semi_mature.pdf", width = 8, height = 5)
+
+mortality
+
+dev.off()
+
+```
+```{r}
+rm(fit, coef_table, vcov_mat, pvalues_table)
+
+fit <- flexsurvreg(
+  Surv(lifespan, SAC) ~ Sex,
+  data = new.data2,
+  dist = "gompertz",
+  anc = list(shape = ~ Sex)
+)
+
+coef_table <- fit$coefficients
+vcov_mat <- vcov(fit)
+
+library(tibble)
+library(dplyr)
+
+# Wald test
+pvalues_table <- tibble(
+  term = names(coef_table),
+  estimate = coef_table,
+  se = sqrt(diag(vcov_mat))
+) %>%
+  mutate(
+    z = estimate / se,
+    p_value = 2 * (1 - pnorm(abs(z)))
+  )
+
+pvalues_table <- pvalues_table %>%
+  mutate(
+    parameter = ifelse(grepl("^shape", term), "shape", "rate"),
+    effect = gsub("shape:|Sex", "", term)
+  )
+
+pvalues_table
+# "Aging rate (shape)", "Baseline hazard (rate)"
+
+```
+
